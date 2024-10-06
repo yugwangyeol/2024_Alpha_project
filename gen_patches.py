@@ -106,17 +106,19 @@ class VideoAnomalyDataset(Dataset):
         img = img.permute([1, 0, 2, 3])
         return img
 
-
     def read_frame_data(self, video_dir, frame, frame_list):
         img = None
         for f in range(self.frame_num):
-            _img = self.read_single_frame(video_dir, frame + f, frame_list)
-            if f == 0:
-                img = _img
+            if frame + f < len(frame_list):
+                _img = self.read_single_frame(video_dir, frame + f, frame_list)
+                if f == 0:
+                    img = _img
+                else:
+                    img = torch.cat((img, _img), dim=1)
             else:
-                img = torch.cat((img, _img), dim=1)
+                print(f"Warning: Frame {frame + f} exceeds the available frame range in {video_dir}")
+                break
         return img
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="patch generation")
