@@ -114,6 +114,8 @@ class VideoAnomalyDataset(Dataset):
     def read_frame_data(self, video_dir, frame, frame_list):
         img = None
         for f in range(self.frame_num):
+            if frame + f > 9999:
+                continue
             _img = self.read_single_frame(video_dir, frame + f, frame_list)
             if f == 0:
                 img = _img
