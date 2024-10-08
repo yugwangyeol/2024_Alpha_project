@@ -6,6 +6,7 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from torchvision import transforms
 
 
 class VideoAnomalyDataset(Dataset):
@@ -90,7 +91,6 @@ class VideoAnomalyDataset(Dataset):
         return img
 
     def read_single_frame(self, video_dir, frame, frame_list):
-        from torchvision import transforms
         transform = transforms.ToTensor()
 
         frame_ = "img_{}.png".format(frame)
@@ -116,7 +116,6 @@ class VideoAnomalyDataset(Dataset):
                 else:
                     img = torch.cat((img, _img), dim=1)
             else:
-                print(f"Warning: Frame {frame + f} exceeds the available frame range in {video_dir}")
                 break
         return img
 
