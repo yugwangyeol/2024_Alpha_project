@@ -113,24 +113,21 @@ class VideoAnomalyDataset_C3D(Dataset):
         return img
 
     def read_single_frame(self, video_dir, frame, frame_list):
-        """
-        Reads a single frame, converts it to a tensor and returns it.
-        """
+        
         transform = transforms.ToTensor()
         img = None
 
-        # Frame naming convention (ensure it matches your dataset structure)
         frame_ = "img_{}.png".format(frame)
-        
-        # Check if the frame is within the available frames
-        assert (frame_ in frame_list), "The frame {} is out of the range:{}.".format(frame_, len(frame_list))
-        
-        jpg_dir = os.path.join(video_dir, frame_)
-        assert os.path.exists(jpg_dir), "{} doesn't exist.".format(jpg_dir)
 
-        img = Image.open(jpg_dir)
-        img = transform(img).unsqueeze(dim=0)  # Convert to tensor and add an extra dimension
-        img = img.permute([1, 0, 2, 3])  # Rearrange dimensions to (C, D, H, W)
+        assert (frame_ in frame_list),\
+            "The frame {} is out of the range:{}.".format(int(frame_), len(frame_list))
+
+        png_dir = '{}/{}'.format(video_dir, frame_)
+        assert os.path.exists(png_dir), "{} isn\'t exists.".format(png_dir)
+
+        img = Image.open(png_dir)
+        img = transform(img).unsqueeze(dim=0) 
+        img = img.permute([1, 0, 2, 3])
         return img
 
     def read_frame_data(self, video_dir, frame, frame_list):
