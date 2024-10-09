@@ -131,17 +131,16 @@ class VideoAnomalyDataset_C3D(Dataset):
         return img
 
     def read_frame_data(self, video_dir, frame, frame_list):
-        """
-        Reads a sequence of frames centered around the specified frame.
-        Returns the concatenated frames.
-        """
         img = None
         for f in range(self.frame_num):
-            _img = self.read_single_frame(video_dir, frame + f, frame_list)
-            if f == 0:
-                img = _img
+            if frame + f < len(frame_list):
+                _img = self.read_single_frame(video_dir, frame + f, frame_list)
+                if f == 0:
+                    img = _img
+                else:
+                    img = torch.cat((img, _img), dim=1)
             else:
-                img = torch.cat((img, _img), dim=1)  # Concatenate frames along the depth dimension (D)
+                break
         return img
 
     def split_image(self, clip, border=2, patch_size=20):
