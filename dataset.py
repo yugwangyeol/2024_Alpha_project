@@ -93,6 +93,7 @@ class VideoAnomalyDataset_C3D(Dataset):
         """
         video_dir = os.path.join(self.data_dir, video_name)
         frame_list = os.listdir(video_dir)
+
         frame_list.sort()  # Ensure frame ordering is correct
 
         img_list = []
