@@ -116,7 +116,7 @@ def train(args):
 
             global_step += 1
 
-            if global_step % args.val_step == 0 and epoch >= 5:
+            if global_step % args.val_step == 0 and epoch >= 0: # 수정
                 smoothed_auc, smoothed_auc_avg, temp_timestamp = val(args, net)
                 writer.add_scalar('Test/smoothed_auc', smoothed_auc, global_step=global_step)
                 writer.add_scalar('Test/smoothed_auc_avg', smoothed_auc_avg, global_step=global_step)

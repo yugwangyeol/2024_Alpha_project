@@ -1,18 +1,15 @@
 import os 
-from numpy.random import f, permutation, rand
 from PIL import Image
 import time
 import torch
 import random
-import pickle
 import numpy as np
 import torch.nn.functional as F
 from torchvision import transforms
 from torch.utils.data import Dataset
-import cv2
 
 class VideoAnomalyDataset_C3D(Dataset):
-    """Video Anomaly Dataset for DAD_jigsaw without object detection."""
+    """Video Anomaly Dataset for DAD_Jigsaw without object detection."""
     def __init__(self,
                  data_dir, 
                  frame_num=7,
@@ -25,22 +22,13 @@ class VideoAnomalyDataset_C3D(Dataset):
         file_list = os.listdir(data_dir)
         file_list.sort()
 
-        self.videos = 0
         self.frame_num = frame_num
         assert self.frame_num % 2 == 1, 'We prefer odd number of frames'
         self.half_frame_num = self.frame_num // 2
 
         self.videos_list = []
-
-        if 'train' in data_dir:
-            self.test_stage = False
-        elif 'test' in data_dir:
-            self.test_stage = True
-        else:
-            raise ValueError("data dir: {} is error, not train or test.".format(data_dir))
-
-        self.phase = 'testing' if self.test_stage else 'training'
-        self.sample_step = 5 if not self.test_stage else 1
+        self.phase = 'testing' if 'test' in data_dir else 'training'
+        self.sample_step = 5 if self.phase == 'training' else 1
 
         self.frames_list = []
         self._load_data(file_list)
@@ -48,19 +36,18 @@ class VideoAnomalyDataset_C3D(Dataset):
     def _load_data(self, file_list):
         t0 = time.time()
         total_frames = 0
-        start_ind = self.half_frame_num if self.test_stage else self.frame_num - 1    
+        start_ind = self.half_frame_num if self.phase == 'testing' else self.frame_num - 1    
         for video_file in file_list:
             if video_file not in self.videos_list:
                 self.videos_list.append(video_file)
             frames = os.listdir(os.path.join(self.data_dir, video_file))
             frames.sort()
-            self.videos += 1
             length = len(frames)
             total_frames += length
             for frame in range(start_ind, length - start_ind, self.sample_step):
                 self.frames_list.append({"video_name": video_file, "frame": frame})
 
-        print("Load {} videos {} frames in {} s.".format(self.videos, total_frames, time.time() - t0))
+        print("Loaded {} videos with {} frames in {:.2f} seconds.".format(len(self.videos_list), total_frames, time.time() - t0))
 
     def __len__(self):
         return len(self.frames_list)
@@ -69,24 +56,21 @@ class VideoAnomalyDataset_C3D(Dataset):
         return self.videos_list
 
     def __getitem__(self, idx): 
-        temporal_flag = idx % 2 == 0 
+        temporal_flag = idx % 2 == 0
         record = self.frames_list[idx]
-        if self.test_stage:
+        if self.phase == 'testing':
             perm = np.arange(self.frame_num)
         else:
-            if random.random() < 0.0001:
-                perm = np.arange(self.frame_num)
-            else:
-                perm = np.random.permutation(self.frame_num)
+            perm = np.random.permutation(self.frame_num) if random.random() >= 0.0001 else np.arange(self.frame_num)
+
+        # 전체 프레임을 객체로 간주하고 읽어오기
         clip = self.get_clip(record["video_name"], record["frame"])
 
-        if not temporal_flag and not self.test_stage:
-            if random.random() < 0.0001:
-                spatial_perm = np.arange(9)
-            else:
-                spatial_perm = np.random.permutation(9)
+        if not temporal_flag and self.phase == 'training':
+            spatial_perm = np.random.permutation(9) if random.random() >= 0.0001 else np.arange(9)
         else:
             spatial_perm = np.arange(9)
+
         clip = self.jigsaw(clip, border=2, patch_size=20, permutation=spatial_perm, dropout=False)
         clip = torch.from_numpy(clip)
 
@@ -100,51 +84,34 @@ class VideoAnomalyDataset_C3D(Dataset):
 
         ret = {"video": record["video_name"], "frame": record["frame"], "clip": clip, "label": perm, 
                "trans_label": spatial_perm, "temporal": temporal_flag}
-        return ret   
+        return ret
 
     def get_clip(self, video_name, frame):
         """
         Reads a sequence of frames centered around the specified frame.
-        Returns the entire frame as an object.
+        Returns the entire frame as a clip.
         """
         video_dir = os.path.join(self.data_dir, video_name)
         frame_list = os.listdir(video_dir)
-        img = self.read_frame_data(video_dir, frame, frame_list)
-        return img
 
-    def read_single_frame(self, video_dir, frame, frame_list):
-        
-        transform = transforms.ToTensor()
-        img = None
+        frame_list.sort()  # Ensure frame ordering is correct
 
-        frame_ = "img_{}.png".format(frame)
+        img_list = []
+        for i in range(frame - self.half_frame_num, frame + self.half_frame_num + 1):
+            img_path = os.path.join(video_dir, f"img_{i}.png")
+            img = Image.open(img_path).convert('L')  # Load as 1-channel grayscale
+            img = np.array(img)
 
-        assert (frame_ in frame_list),\
-            "The frame {} is out of the range:{}.".format(int(frame_), len(frame_list))
+            # Convert 1-channel to 3-channel by replicating
+            img = np.stack([img] * 3, axis=0)  # Shape: (3, H, W)
+            img_list.append(img)
 
-        png_dir = '{}/{}'.format(video_dir, frame_)
-        assert os.path.exists(png_dir), "{} isn\'t exists.".format(png_dir)
-
-        img = Image.open(png_dir)
-        img = transform(img).unsqueeze(dim=0) 
-        img = img.permute([1, 0, 2, 3])
-        return img
-
-    def read_frame_data(self, video_dir, frame, frame_list):
-        img = None
-        for f in range(self.frame_num):
-            if frame + f < len(frame_list):
-                _img = self.read_single_frame(video_dir, frame + f, frame_list)
-                if f == 0:
-                    img = _img
-                else:
-                    img = torch.cat((img, _img), dim=1)
-            else:
-                break
-        return img
+        clip = np.array(img_list).transpose(1, 0, 2, 3)  # (C, T, H, W)
+        return clip
 
     def split_image(self, clip, border=2, patch_size=20):
         """
+        Splits the clip into patches.
         clip: (C, T, H, W)
         """
         patch_list = []
@@ -157,9 +124,10 @@ class VideoAnomalyDataset_C3D(Dataset):
 
     def concat(self, patch_list, border=2, patch_size=20, permutation=np.arange(9), num=3, dropout=False):
         """
+        Concatenate the patches back into a full image.
         patch_list: [(C, T, h1, w1)]
         """
-        clip = np.zeros((3, self.frame_num, 64, 64), dtype=np.float32)
+        clip = np.zeros((3, self.frame_num, 64, 64), dtype=np.float32)  # (C, T, H, W)
         drop_ind = random.randint(0, len(permutation) - 1)
         for p_ind, i in enumerate(permutation):
             if drop_ind == p_ind and dropout:
@@ -172,6 +140,9 @@ class VideoAnomalyDataset_C3D(Dataset):
         return clip
 
     def jigsaw(self, clip, border=2, patch_size=20, permutation=None, dropout=False):
+        """
+        Applies jigsaw permutation to the clip.
+        """
         patch_list = self.split_image(clip, border, patch_size)
         clip = self.concat(patch_list, border=border, patch_size=patch_size, permutation=permutation, num=3, dropout=dropout)
         return clip
