@@ -528,6 +528,18 @@ def compute_auc(res, reverse, smoothing):
         labels = np.concatenate((labels[:], gt[i]), axis=0)
 
     # print("label.shape:{}, scores.shape:{}".format(labels.shape, scores.shape))
+
+    # Check for NaN in scores and labels before passing to roc_curve
+    print("Checking NaN in scores and labels...")
+    if np.isnan(scores).any():
+        print("NaN found in scores")
+    if np.isnan(labels).any():
+        print("NaN found in labels")
+
+    # Optional: print the actual NaN indices
+    print("NaN indices in scores:", np.where(np.isnan(scores)))
+    print("NaN indices in labels:", np.where(np.isnan(labels)))
+
     fpr, tpr, _ = metrics.roc_curve(labels, scores, pos_label=1)
     auc = metrics.auc(fpr, tpr)
 

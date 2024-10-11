@@ -130,5 +130,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
     data_dir = os.path.join(args.data_dir, 'DAD_Jigsaw', args.phase + 'ing', args.data_type, 'frames')
     dataset = VideoAnomalyDataset(data_dir=data_dir, 
-                                  frame_num=args.sample_num,
-                                  data_type=args.data_type)
+                                    frame_num=args.sample_num,
+                                    data_type=args.data_type)

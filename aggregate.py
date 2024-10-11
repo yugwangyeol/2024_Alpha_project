@@ -98,7 +98,7 @@ def remake_video_output(video_output, dataset='DAD_Jigsaw'):
         local_max2_ = max(video2_[non_ones])
         video2_[non_ones] = (video2_[non_ones] - min(video2_)) / (local_max2_ - min(video2_))
 
-       # spatial
+        # spatial
         video_ = score_smoothing(video_)
         # temporal
         video2_ = score_smoothing(video2_)
