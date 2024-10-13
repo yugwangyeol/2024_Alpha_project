@@ -107,6 +107,15 @@ def compute_auc(res, reverse, smoothing):
 
     for i in range(num_videos):
         distance = psnr_records[i]
+
+        if np.isnan(distance).all() or np.isinf(distance).all():
+            print(f"Skipping epoch {i} due to all NaN or Inf values in distance")
+            continue 
+        if np.isnan(distance).any() or np.isinf(distance).any():
+            distance = np.nan_to_num(distance, nan=np.nanmean(distance))
+            print(f"change nan epoch {i} : {np.nanmean(distance)}")
+            continue 
+
         if NORMALIZE:
             distance = (distance - distance.min()) / (distance.max() - distance.min() + 1e-8)
             if reverse:
@@ -132,6 +141,15 @@ def compute_auc_average(res, reverse, smoothing):
 
     for i in range(num_videos):
         distance = psnr_records[i]
+        
+        if np.isnan(distance).all() or np.isinf(distance).all():
+            print(f"Skipping epoch {i} due to all NaN or Inf values in distance")
+            continue 
+        if np.isnan(distance).any() or np.isinf(distance).any():
+            distance = np.nan_to_num(distance, nan=np.nanmean(distance))
+            print(f"change nan epoch {i} : {np.nanmean(distance)}")
+            continue
+
         if NORMALIZE and reverse:
             distance = 1 - distance
         if smoothing:
