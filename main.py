@@ -34,6 +34,7 @@ def get_configs():
     parser.add_argument("--dataset", type=str, default="DAD_Jigsaw")
     parser.add_argument("--data_type", type=str, default='top_IR', 
                         choices=['front_depth', 'front_IR', 'top_depth', 'top_IR'])
+    parser.add_argument("--save_epoch", type=int, default=1)
     args = parser.parse_args()
 
     args.device = torch.device("cuda:{}".format(args.gpu_id) if torch.cuda.is_available() else "cpu")
@@ -90,6 +91,7 @@ def train(args):
     for epoch in range(args.epochs):
         for it, data in enumerate(vad_dataloader): # 전체 epochs 동안 vad_dataloader에서 데이터를 반복해서 가져옴
             video, clip, temp_labels, spat_labels, t_flag = data['video'], data['clip'], data['label'], data["trans_label"], data["temporal"]
+
             n_temp = t_flag.sum().item()
 
             clip = clip.cuda(args.device, non_blocking=True)
@@ -124,7 +126,7 @@ def train(args):
 
             global_step += 1
 
-            if global_step % args.val_step == 0 and epoch >= 0: # 수정
+            if global_step % args.val_step == 0 and epoch >= 5: # 수정
                 smoothed_auc, smoothed_auc_avg, temp_timestamp = val(args, net)
                 writer.add_scalar('Test/smoothed_auc', smoothed_auc, global_step=global_step)
                 writer.add_scalar('Test/smoothed_auc_avg', smoothed_auc_avg, global_step=global_step)
@@ -137,7 +139,14 @@ def train(args):
 
                 print('cur max: ' + str(max_acc) + ' in ' + timestamp_in_max)
                 net = net.train()
+        
+        if epoch % args.save_epoch == 0 and epoch >= 5:
+            save = './save_ckpt/{}_{}.pth'.format(running_date,epoch)
+            torch.save(net.state_dict(), save)
             
+def compare_clips(clip1, clip2):
+    diff = (clip1 - clip2).abs().sum().item()
+    print(f"Difference between clips: {diff}")
 
 def val(args, net=None):
     if not args.log_date:
@@ -147,7 +156,7 @@ def val(args, net=None):
     print("The running_date : {}".format(running_date))
 
     # Load Data
-    data_dir = f"/home/work/Alpha/Jigsaw-VAD/{args.dataset}/testing/{args.data_type}/frames"
+    data_dir = f"/home/work/Alpha/Jigsaw-VAD/{args.dataset}/testing/{args.data_type}/frames" #
 
     testing_dataset = VideoAnomalyDataset_C3D(data_dir, 
                                               frame_num=args.sample_num)
@@ -156,14 +165,21 @@ def val(args, net=None):
     net.eval()
 
     video_output = {}
-    for data in tqdm(testing_data_loader):
+    for idx, data in enumerate(tqdm(testing_data_loader)):
         videos = data["video"]
         frames = data["frame"].tolist()
         clip = data["clip"].cuda(args.device)
-    
+
         with torch.no_grad():
             temp_logits, spat_logits = net(clip)
+            #print("Temp logits1:", temp_logits)
+            if torch.isnan(temp_logits).any(): # 수정
+                print(f"NaN detected in output at batch {idx}")
+                print(f"Input statistics: min={data['clip'].min()}, max={data['clip'].max()}")
+
             temp_logits = temp_logits.view(-1, args.sample_num, args.sample_num)
+            #print("Temp logits2:", temp_logits)
+
             spat_logits = spat_logits.view(-1, 9, 9)
 
         spat_probs = F.softmax(spat_logits, -1)
@@ -173,15 +189,18 @@ def val(args, net=None):
 
         temp_probs = F.softmax(temp_logits, -1)
         diag2 = torch.diagonal(temp_probs, offset=0, dim1=-2, dim2=-1)
+        #print(diag2.shape)
         scores2 = diag2.min(-1)[0].cpu().numpy()
         # temp_logits 값을 소프트맥스 함수(softmax)를 사용하여 확률로 변환하고, 주 대각선 요소를 선택하여 각 로짓의 최소값을 scores에 저장
         
         for video_, frame_, s_score_, t_score_  in zip(videos, frames, scores, scores2):
+            #print(s_score_ ,' ' ,t_score_)
             if video_ not in video_output:
                 video_output[video_] = {}
             if frame_ not in video_output[video_]:
                 video_output[video_][frame_] = []
             video_output[video_][frame_].append([s_score_, t_score_])
+            #print(s_score_,t_score_)
         # video_output 딕셔너리에 video_, frame_을 키로 하고, s_score_, t_score_ 값을 저장하여 각 비디오와 프레임의 성능을 기록
 
     micro_auc, macro_auc = save_and_evaluate(video_output, running_date, dataset=args.dataset)
@@ -197,7 +216,7 @@ def save_and_evaluate(video_output, running_date, dataset='DAD_Jigsaw'):
     evaluate_auc(video_output_temporal, dataset=dataset)
     smoothed_res, smoothed_auc_list = evaluate_auc(video_output_complete, dataset=dataset)
     return smoothed_res.auc, np.mean(smoothed_auc_list)
-
+#
 
 if __name__ == '__main__':
     if not os.path.exists('checkpoint'):

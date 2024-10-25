@@ -8,6 +8,53 @@ import pickle
 import math
 import json
 
+###
+import matplotlib.pyplot as plt
+
+class StatsTracker:
+    def __init__(self):
+        self.stats = []
+
+    def update(self, epoch, psnr_records):
+        epoch_stats = {
+            'epoch': epoch,
+            'min': np.min([np.min(v) for v in psnr_records]),
+            'max': np.max([np.max(v) for v in psnr_records]),
+            'mean': np.mean([np.mean(v) for v in psnr_records]),
+            'std': np.mean([np.std(v) for v in psnr_records]),
+            'nan_count': sum([np.isnan(v).sum() for v in psnr_records]),
+            'inf_count': sum([np.isinf(v).sum() for v in psnr_records])
+        }
+        self.stats.append(epoch_stats)
+
+    def print_summary(self):
+        for stat in self.stats:
+            print(f"Epoch {stat['epoch']}: Min={stat['min']:.2f}, Max={stat['max']:.2f}, "
+                  f"Mean={stat['mean']:.2f}, Std={stat['std']:.2f}, "
+                  f"NaN Count={stat['nan_count']}, Inf Count={stat['inf_count']}")
+
+def log_epoch_stats(epoch, psnr_records):
+    for i, video_data in enumerate(psnr_records):
+        print(f"Epoch {epoch}, Video {i}:")
+        print(f"  Min: {np.min(video_data)}")
+        print(f"  Max: {np.max(video_data)}")
+        print(f"  Mean: {np.mean(video_data)}")
+        print(f"  Std: {np.std(video_data)}")
+        print(f"  NaN count: {np.isnan(video_data).sum()}")
+        print(f"  Inf count: {np.isinf(video_data).sum()}")
+
+def visualize_data_distribution(epoch, psnr_records):
+    plt.figure(figsize=(10, 6))
+    for i, video_data in enumerate(psnr_records):
+        plt.hist(video_data, bins=50, alpha=0.5, label=f'Video {i}')
+    plt.title(f'Data Distribution at Epoch {epoch}')
+    plt.xlabel('PSNR values')
+    plt.ylabel('Frequency')
+    plt.legend()
+    plt.savefig(f'./dist/distribution_epoch_{epoch}.png')
+    plt.close()
+###
+
 # Path to the dataset directory
 DATA_DIR = '/home/work/Alpha/Jigsaw-VAD/'
 
@@ -105,19 +152,36 @@ def compute_auc(res, reverse, smoothing):
     scores = np.array([], dtype=np.float32)
     labels = np.array([], dtype=np.int8)
 
+    tracker = StatsTracker()  # Initialize StatsTracker
+
     for i in range(num_videos):
         distance = psnr_records[i]
+        
+        # Log stats for each epoch
+        #log_epoch_stats(i, [distance])
+        
+        # Update tracker
+        tracker.update(i, [distance])
+        
+        # Visualize data distribution
+        visualize_data_distribution(i, [distance])
 
         if np.isnan(distance).all() or np.isinf(distance).all():
             print(f"Skipping epoch {i} due to all NaN or Inf values in distance")
             continue 
         if np.isnan(distance).any() or np.isinf(distance).any():
+            #print(distance)
             distance = np.nan_to_num(distance, nan=np.nanmean(distance))
             print(f"change nan epoch {i} : {np.nanmean(distance)}")
             continue 
 
         if NORMALIZE:
-            distance = (distance - distance.min()) / (distance.max() - distance.min() + 1e-8)
+            min_val = distance.min()
+            max_val = distance.max()
+            if max_val > min_val:
+                distance = (distance - min_val) / (max_val - min_val)
+            else:
+                distance = np.zeros_like(distance)
             if reverse:
                 distance = 1 - distance
         if smoothing:
@@ -128,6 +192,9 @@ def compute_auc(res, reverse, smoothing):
 
         scores = np.concatenate((scores[:], distance), axis=0)
         labels = np.concatenate((labels[:], gt[i]), axis=0)
+
+    # Print summary at the end
+    tracker.print_summary()
 
     fpr, tpr, _ = metrics.roc_curve(labels, scores, pos_label=1)
     auc = metrics.auc(fpr, tpr)

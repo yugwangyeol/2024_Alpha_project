@@ -55,7 +55,7 @@ class VideoAnomalyDataset_C3D(Dataset):
                 self.frames_list.append({"video_name": video_file, "frame": frame})
                 # frame_list에 비디오 이름과 프레임 번호를 저장
 
-        print("Loaded {} videos with {} frames in {:.2f} seconds.".format(len(self.videos_list), total_frames, time.time() - t0))
+        print("{} Loaded {} videos with {} frames in {:.2f} seconds.".format(self.phase ,len(self.videos_list), total_frames, time.time() - t0))
 
     def __len__(self):
         return len(self.frames_list)
@@ -82,6 +82,15 @@ class VideoAnomalyDataset_C3D(Dataset):
         # C (채널): 이미지의 채널 수. 이 코드에서는 3채널(컬러 이미지)로 가정
         # T (타임/프레임): 클립에 포함된 프레임 수 (self.frame_num)
         # H (높이) 및 W (너비): 각 프레임의 높이와 너비
+
+        if clip is None: # 수정
+            # 에러 처리 로직 추가
+            print(f"Error getting clip for {record['video_name']} at frame {record['frame']}")
+            # 대체 클립 반환 또는 예외 처리
+            
+        # NaN 체크 추가 
+        if np.isnan(clip).any():# 수정
+            print(f"NaN detected in clip: {record['video_name']} at frame {record['frame']}")
 
         if not temporal_flag and self.phase == 'training':
             spatial_perm = np.random.permutation(9) if random.random() >= 0.0001 else np.arange(9)
@@ -117,17 +126,15 @@ class VideoAnomalyDataset_C3D(Dataset):
         # temporal: 클립이 시간 순서 섞기가 적용되었는지 여부
         return ret
 
-    def get_clip(self, video_name, frame):
-        """
-        Reads a sequence of frames centered around the specified frame.
-        Returns the entire frame as a clip.
-        """
+    """def get_clip(self, video_name, frame):
+
         video_dir = os.path.join(self.data_dir, video_name)
         frame_list = os.listdir(video_dir)
         frame_list.sort()  # Ensure frame ordering is correct
 
         img_list = []
         for i in range(frame - self.half_frame_num, frame + self.half_frame_num + 1):
+            #print(f"img_{i}.png")
             img_path = os.path.join(video_dir, f"img_{i}.png")
             img = Image.open(img_path).convert('L')  # Load as 1-channel grayscale
             img = np.array(img)
@@ -139,6 +146,31 @@ class VideoAnomalyDataset_C3D(Dataset):
         arr_expanded = np.expand_dims(np.array(img_list), axis=1)
         clip = arr_expanded.transpose(1, 0, 2, 3)  # (C, T, H, W)
         # 프레임 리스트를 하나의 클립으로 결합하여 (C, T, H, W) 형식의 4차원 배열로 반환
+        return clip"""
+
+    def get_clip(self, video_name, frame): # 수정
+        video_dir = os.path.join(self.data_dir, video_name)
+        frame_list = os.listdir(video_dir)
+        # 수정된 정렬 방식
+        frame_list.sort(key=lambda x: int(x.split('_')[1].split('.')[0]))
+        
+        img_list = []
+        for i in range(frame - self.half_frame_num, frame + self.half_frame_num + 1):
+            img_path = os.path.join(video_dir, f"img_{i}.png")
+            try:
+                img = Image.open(img_path).convert('L')
+                img = np.array(img) / 255.0  # 정규화 추가
+                img_list.append(img)
+            except:
+                print(f"Error loading frame: {img_path}")
+                return None
+                
+        if len(img_list) != self.frame_num:
+            print(f"Incomplete clip for {video_name} at frame {frame}")
+            return None
+            
+        arr_expanded = np.expand_dims(np.array(img_list), axis=1)
+        clip = arr_expanded.transpose(1, 0, 2, 3)
         return clip
 
     def split_image(self, clip, border=2, patch_size=20):
