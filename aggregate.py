@@ -44,7 +44,7 @@ def score_smoothing(score, ws=43, function='mean', sigma=10):
 
 def load_frames(dataset, frame_num=7):
     root = '/home/work/Alpha/Jigsaw-VAD'
-    data_dir = os.path.join(root, dataset, 'testing', 'front_IR') # 수정 #
+    data_dir = os.path.join(root, dataset, 'testing', 'top_depth') # 수정 #
 
     file_list = sorted(os.listdir(data_dir))
     frames_list = []
@@ -122,7 +122,7 @@ def remake_video_output(video_output, dataset='DAD_Jigsaw'):
 
 def evaluate_auc(video_output, dataset='DAD_Jigsaw'):#
     result_dict = {'dataset': dataset, 'psnr': video_output}
-    smoothed_results, aver_smoothed_result = evaluate.evaluate_all(result_dict, reverse=False, smoothing=False) # 수정 
+    smoothed_results, aver_smoothed_result = evaluate.evaluate_all(result_dict, reverse=True, smoothing=True) # 수정 
     print("(smoothing: True): {}  aver_result: {}".format(smoothed_results, aver_smoothed_result))
     return smoothed_results, aver_smoothed_result
 

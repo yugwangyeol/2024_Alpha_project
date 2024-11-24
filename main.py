@@ -32,7 +32,7 @@ def get_configs():
     parser.add_argument("--sample_num", type=int, default=5) # 한 비디오에서 사용할 프레임의 개수
     parser.add_argument("--checkpoint", type=str, default=None) # 
     parser.add_argument("--dataset", type=str, default="DAD_Jigsaw")
-    parser.add_argument("--data_type", type=str, default='top_IR', 
+    parser.add_argument("--data_type", type=str, default='top_depth', 
                         choices=['front_depth', 'front_IR', 'top_depth', 'top_IR'])
     parser.add_argument("--save_epoch", type=int, default=1)
     args = parser.parse_args()
