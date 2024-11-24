@@ -31,6 +31,6 @@ def process_videos(video_dir, frames_dir):
             extract_frames(video_path, output_dir)
 
 if __name__ == '__main__':
-    video_directory = '/home/work/Alpha/Jigsaw-VAD/shanghaitech/training/videos'
-    frames_directory = '/home/work/Alpha/Jigsaw-VAD/shanghaitech/training/frames'
+    video_directory = '/home/work/Alpha/Jigsaw-VAD/DAD_Jigsaw/training/videos'
+    frames_directory = '/home/work/Alpha/Jigsaw-VAD/DAD_Jigsaw/training/frames'
     process_videos(video_directory, frames_directory)

@@ -152,7 +152,7 @@ def compute_auc(res, reverse, smoothing):
     scores = np.array([], dtype=np.float32)
     labels = np.array([], dtype=np.int8)
 
-    tracker = StatsTracker()  # Initialize StatsTracker
+    #tracker = StatsTracker()  # Initialize StatsTracker
 
     for i in range(num_videos):
         distance = psnr_records[i]
@@ -161,10 +161,10 @@ def compute_auc(res, reverse, smoothing):
         #log_epoch_stats(i, [distance])
         
         # Update tracker
-        tracker.update(i, [distance])
+        #tracker.update(i, [distance])
         
         # Visualize data distribution
-        visualize_data_distribution(i, [distance])
+        #visualize_data_distribution(i, [distance])
 
         if np.isnan(distance).all() or np.isinf(distance).all():
             print(f"Skipping epoch {i} due to all NaN or Inf values in distance")
@@ -194,7 +194,7 @@ def compute_auc(res, reverse, smoothing):
         labels = np.concatenate((labels[:], gt[i]), axis=0)
 
     # Print summary at the end
-    tracker.print_summary()
+    #tracker.print_summary()
 
     fpr, tpr, _ = metrics.roc_curve(labels, scores, pos_label=1)
     auc = metrics.auc(fpr, tpr)

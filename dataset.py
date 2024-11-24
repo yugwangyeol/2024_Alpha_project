@@ -159,7 +159,8 @@ class VideoAnomalyDataset_C3D(Dataset):
             img_path = os.path.join(video_dir, f"img_{i}.png")
             try:
                 img = Image.open(img_path).convert('L')
-                img = np.array(img) / 255.0  # 정규화 추가
+                #img = np.array(img) / 255.0  # 정규화 추가
+                img = np.array(img, dtype=np.float32)
                 img_list.append(img)
             except:
                 print(f"Error loading frame: {img_path}")
