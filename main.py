@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from dataset import VideoAnomalyDataset_C3D
+from dataset import VideoAnomalyDataset_C3D#, VideoAnomalyDataset_C3D_for_Clip
 from models import model
 
 from tqdm import tqdm
@@ -22,17 +22,18 @@ torch.backends.cudnn.benchmark = False
 # Config
 def get_configs():
     parser = argparse.ArgumentParser(description="VAD-Jigsaw config")
-    parser.add_argument("--val_step", type=int, default=500) # 검증 주기
+    parser.add_argument("--val_step", type=int, default=5000) # 검증 주기
     parser.add_argument("--print_interval", type=int, default=100) # 학습 중 로그를 출력할 간격
     parser.add_argument("--epochs", type=int, default=100) # 전체 학습 반복 수
     parser.add_argument("--gpu_id", type=str, default=0) # GPU ID를 지정하여 사용할 GPU를 설정
     parser.add_argument("--log_date", type=str, default=None) # 로그를 저장할 날짜 및 시간
-    parser.add_argument("--batch_size", type=int, default=64) # 학습 시 배치 크기
-    parser.add_argument("--static_threshold", type=float, default=0.3) # 정적 프레임을 판단하는 임계값
-    parser.add_argument("--sample_num", type=int, default=5) # 한 비디오에서 사용할 프레임의 개수
+    parser.add_argument("--batch_size", type=int, default=192) # 학습 시 배치 크기
+    parser.add_argument("--static_threshold", type=float, default=0.2) # 정적 프레임을 판단하는 임계값
+    parser.add_argument("--sample_num", type=int, default=7) # 한 비디오에서 사용할 프레임의 개수
+    parser.add_argument("--clip_num", type=int, default=5)
     parser.add_argument("--checkpoint", type=str, default=None) # 
     parser.add_argument("--dataset", type=str, default="DAD_Jigsaw")
-    parser.add_argument("--data_type", type=str, default='top_depth', 
+    parser.add_argument("--data_type", type=str, default='top_IR', 
                         choices=['front_depth', 'front_IR', 'top_depth', 'top_IR'])
     parser.add_argument("--save_epoch", type=int, default=1)
     args = parser.parse_args()
@@ -56,8 +57,9 @@ def train(args):
     vad_dataset = VideoAnomalyDataset_C3D(data_dir, 
                                           frame_num=args.sample_num,
                                           static_threshold=args.static_threshold)
+    #vad_clip_dataset = VideoAnomalyDataset_C3D_clip(data_dir,clip_num=args.clip_num, static_threshold=None) #############################################
 
-    vad_dataloader = DataLoader(vad_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    vad_dataloader = DataLoader(vad_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True)
     net = model.WideBranchNet(time_length=args.sample_num, num_classes=[args.sample_num ** 2, 81])
     # ime_length는 입력 프레임 수를, num_classes는 분류할 클래스 수를 나타냄
     # args.sample_num ** 2는 sample_num 값에 따라 달라짐
@@ -90,9 +92,29 @@ def train(args):
 
     for epoch in range(args.epochs):
         for it, data in enumerate(vad_dataloader): # 전체 epochs 동안 vad_dataloader에서 데이터를 반복해서 가져옴
-            video, clip, temp_labels, spat_labels, t_flag = data['video'], data['clip'], data['label'], data["trans_label"], data["temporal"]
-
+            video, clip, temp_labels, spat_labels, t_flag, clip_org, phase = data['video'], data['clip'], data['label'], data["trans_label"], data["temporal"], data["clip_org"], data["phase"]
+            '''
             n_temp = t_flag.sum().item()
+
+            stacked_clips = torch.stack(clips) # clip stack하기
+            # custom dataset
+            vad_dataset_clip = VideoAnomalyDataset_C3D_for_Clip(clips = stacked_clips, 
+                                                                frame_num=args.sample_num,
+                                                                static_threshold=args.static_threshold,
+                                                                phase = phase)
+            # dataloader
+            vad_dataloader_clip = dataloader(vad_dataset_clip, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True)
+            # 초기화
+            if len(stacked_clips)==args.clip_num: # clip_num이 되면
+                stacked_clips = []
+            # dataloader
+            for clip_data in vad_dataloader_clip:
+                label = clip_data["label"]
+
+
+
+
+            stacked_clips = stacked_clips.cuda(args.device, non_blocking=True)'''
 
             clip = clip.cuda(args.device, non_blocking=True)
             # clip 데이터를 GPU로 옮김
@@ -100,6 +122,8 @@ def train(args):
             temp_labels = temp_labels[t_flag].long().view(-1).cuda(args.device)
             spat_labels = spat_labels[~t_flag].long().view(-1).cuda(args.device)
             # t_flag에 해당하는 데이터의 임시 라벨과 공간 라벨을 GPU로 옮기고, view(-1)을 사용하여 1차원 텐서로 변환
+
+
 
             temp_logits, spat_logits = net(clip)
             temp_logits = temp_logits[t_flag].view(-1, args.sample_num)

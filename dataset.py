@@ -21,7 +21,8 @@ class VideoAnomalyDataset_C3D(Dataset):
         self.static_threshold = static_threshold
         file_list = os.listdir(data_dir)
         file_list.sort()
-
+        
+        #frame
         self.frame_num = frame_num
         assert self.frame_num % 2 == 1, 'We prefer odd number of frames' # 프렘이 수가 홀수 인지 아닌지 판단
         self.half_frame_num = self.frame_num // 2 
@@ -98,6 +99,8 @@ class VideoAnomalyDataset_C3D(Dataset):
         else:
             spatial_perm = np.arange(9)
 
+        clip_org = torch.from_numpy(clip) # stack 용도 clip 저장
+
         clip = self.jigsaw(clip, border=2, patch_size=20, permutation=spatial_perm, dropout=False)
         # 클립을 조각낸 뒤 (jigsaw 메서드를 호출) 다시 결합
         # 이때 border=2 및 patch_size=20을 사용하여 64x64 크기의 이미지를 3x3의 조각으로 나눕
@@ -116,7 +119,7 @@ class VideoAnomalyDataset_C3D(Dataset):
         # 클립의 픽셀 값이 0과 1 사이로 클램핑 -> 이는 픽셀 값이 잘못된 범위로 벗어나는 경우를 방지하기 위해 사용
 
         ret = {"video": record["video_name"], "frame": record["frame"], "clip": clip, "label": perm, 
-               "trans_label": spatial_perm, "temporal": temporal_flag}
+               "trans_label": spatial_perm, "temporal": temporal_flag, "clip_org":clip_org, "phase":self.phase}
         
         # Video: 비디오 이름.
         # frame: 해당 클립의 기준이 되는 프레임 번호.
@@ -124,29 +127,9 @@ class VideoAnomalyDataset_C3D(Dataset):
         # label: 클립의 시간 순서를 나타내는 라벨.
         # trans_label: 클립의 공간 순서를 나타내는 라벨.
         # temporal: 클립이 시간 순서 섞기가 적용되었는지 여부
+        # clip_org : stack 용 clip
         return ret
 
-    """def get_clip(self, video_name, frame):
-
-        video_dir = os.path.join(self.data_dir, video_name)
-        frame_list = os.listdir(video_dir)
-        frame_list.sort()  # Ensure frame ordering is correct
-
-        img_list = []
-        for i in range(frame - self.half_frame_num, frame + self.half_frame_num + 1):
-            #print(f"img_{i}.png")
-            img_path = os.path.join(video_dir, f"img_{i}.png")
-            img = Image.open(img_path).convert('L')  # Load as 1-channel grayscale
-            img = np.array(img)
-
-            # Convert 1-channel to 3-channel by replicating
-            #img = np.stack([img] * 3, axis=0)  # Shape: (3, H, W)
-            # 1채널(그레이스케일)을 3채널로 복사하여 (3, H, W) 형식의 배열로 만듭니다.
-            img_list.append(img)
-        arr_expanded = np.expand_dims(np.array(img_list), axis=1)
-        clip = arr_expanded.transpose(1, 0, 2, 3)  # (C, T, H, W)
-        # 프레임 리스트를 하나의 클립으로 결합하여 (C, T, H, W) 형식의 4차원 배열로 반환
-        return clip"""
 
     def get_clip(self, video_name, frame): # 수정
         video_dir = os.path.join(self.data_dir, video_name)
@@ -159,7 +142,8 @@ class VideoAnomalyDataset_C3D(Dataset):
             img_path = os.path.join(video_dir, f"img_{i}.png")
             try:
                 img = Image.open(img_path).convert('L')
-                #img = np.array(img) / 255.0  # 정규화 추가
+                img = img.resize((64, 64)) # 64,64 resize
+                img = np.array(img) / 255.0  # 정규화 추가
                 img = np.array(img, dtype=np.float32)
                 img_list.append(img)
             except:
@@ -193,7 +177,7 @@ class VideoAnomalyDataset_C3D(Dataset):
         patch_list: [(C, T, h1, w1)]
         """
         clip = np.zeros((1, self.frame_num, 64, 64), dtype=np.float32)  # (C, T, H, W)
-        # 64x64 크기의 빈 클립을 생성
+        # 64,64 크기의 빈 클립을 생성
         drop_ind = random.randint(0, len(permutation) - 1)
         for p_ind, i in enumerate(permutation): #주어진 순서(permutation)대로 패치를 배치
             if drop_ind == p_ind and dropout:
@@ -213,3 +197,41 @@ class VideoAnomalyDataset_C3D(Dataset):
         patch_list = self.split_image(clip, border, patch_size)
         clip = self.concat(patch_list, border=border, patch_size=patch_size, permutation=permutation, num=3, dropout=dropout)
         return clip
+
+'''
+
+class VideoAnomalyDataset_C3D_for_Clip(Dataset):
+
+    def __init__(self,
+                clips, # data_dir
+                clip_num = 5,
+                static_threshold=0.1,
+                phase):
+
+        #clip
+        self.clips = clips # stacked clips
+        self.clip_num = clip_num
+        assert self.clip_num % 2 == 1, 'We prefer odd number of clips'
+        self.half_clip_num = self.frame_num //2
+
+    def __len__(self):
+        return len(self.clips) # 5
+    
+
+    def __getitem__(self, idx):
+        temporal_flag = idx % 2 ==0
+        record = self.frames_list[idx]
+        if self.phase == 'testing':
+            perm = np.arange(self.clip_num)
+        else:
+            perm = np.random.permutation(self.clip_num) if random.random() >= 0.0001 else np.arange(self.clip_num)
+        clip = self.get_clip(record['video_name'], record['frame'])
+    
+    def get_clips
+
+    def split_clips
+
+    def concat
+
+    def jigsaw
+    '''
