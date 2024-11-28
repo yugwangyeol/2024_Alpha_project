@@ -198,12 +198,12 @@ class VideoAnomalyDataset_C3D(Dataset):
         clip = self.concat(patch_list, border=border, patch_size=patch_size, permutation=permutation, num=3, dropout=dropout)
         return clip
 
-'''
+
 
 class VideoAnomalyDataset_C3D_for_Clip(Dataset):
 
     def __init__(self,
-                clips, # data_dir
+                clips, # data_dir 대신
                 clip_num = 5,
                 static_threshold=0.1,
                 phase):
@@ -214,24 +214,68 @@ class VideoAnomalyDataset_C3D_for_Clip(Dataset):
         assert self.clip_num % 2 == 1, 'We prefer odd number of clips'
         self.half_clip_num = self.frame_num //2
 
-    def __len__(self):
+    def __len__(self): # stacked clip의 총 개수
         return len(self.clips) # 5
     
 
     def __getitem__(self, idx):
-        temporal_flag = idx % 2 ==0
-        record = self.frames_list[idx]
+        clip = self.clips[idx]  # 스택된 클립에서 idx에 해당하는 클립 가져옴
+
+        # Temporal flag 설정
+        temporal_flag = idx % 2 == 0
+
+        # 랜덤 순서 지정
         if self.phase == 'testing':
             perm = np.arange(self.clip_num)
         else:
             perm = np.random.permutation(self.clip_num) if random.random() >= 0.0001 else np.arange(self.clip_num)
-        clip = self.get_clip(record['video_name'], record['frame'])
-    
-    def get_clips
 
-    def split_clips
+        # Spatial permutation
+        spatial_perm = np.random.permutation(9) if not temporal_flag else np.arange(9)
 
-    def concat
+        # 클립에 Jigsaw 적용
+        jigsaw_clip = self.jigsaw(clip, border=2, patch_size=20, permutation=spatial_perm, dropout=False)
 
-    def jigsaw
-    '''
+        # 결과 반환
+        ret = {
+            "clips": torch.from_numpy(jigsaw_clip),  # Jigsaw가 적용된 클립
+            "label": perm,  # Temporal 순서 라벨
+            "trans_label": spatial_perm,  # Spatial 순서 라벨
+            "temporal": temporal_flag  # Temporal 섞임 여부
+        }
+        return ret
+        
+    def split_clips(self, clips, border = 2, patch_size = 20):
+        # 5개 클립을 패치로 분리
+        patch_list = []
+        num_patches_y = (64-2*border)//patch_size
+        num_patches_x = (64-2*border)//patch_size
+        
+        for i in range(num_patches_y):
+            for j in range(num_patches_x):
+                y_offset = border + patch_size * i
+                x_offset = border + patch_size * j
+                patch_list.append(clips[:, :, y_offset: y_offset + patch_size, x_offset: x_offset + patch_size])
+        return patch_list
+
+    def concat(self, patch_list, border = 2, patch_size = 20, permutation = None, num = 3, dropout = False):
+        
+        total_frames = self.clip_num * self.frame_num
+        clip = np.zeros((1, total_frames, 64, 64), dtype=np.float32)
+        
+        drop_ind = random.randint(0, len(permutation) -1) if dropout else -1
+        for p_ind, i in enumerate(permutation):
+            if drop_ind == p_ind and dropout:
+                continue
+            y = i//num
+            x = i%num
+            y_offset = border + patch_size * y
+            x_offset = border + patch_size * x
+            clip[:, :, y_offset: y_offset + patch_size, x_offset: x_offset + patch_size] = patch_list[p_ind]
+    return clip
+            
+
+    def jigsaw(self, clips, border = 2, patch_size = 20, permutation = None, dropout = False):
+        patch_list = self.split_clips(clips, border, patch_size)
+        clips = self.concat(patch_list, border=border, patch_size=patch_size, permutation=permutation, num=3, dropout=dropout)
+        return clips

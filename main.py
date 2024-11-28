@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from dataset import VideoAnomalyDataset_C3D#, VideoAnomalyDataset_C3D_for_Clip
+from dataset import VideoAnomalyDataset_C3D, VideoAnomalyDataset_C3D_for_Clip
 from models import model
 
 from tqdm import tqdm
@@ -89,65 +89,78 @@ def train(args):
 
     max_acc = -1
     timestamp_in_max = None
+    
+    frame_loss_sum = 0  # 프레임 로스를 누적할 변수
+    stacked_clips = []  # 클립을 저장할 리스트
 
     for epoch in range(args.epochs):
-        for it, data in enumerate(vad_dataloader): # 전체 epochs 동안 vad_dataloader에서 데이터를 반복해서 가져옴
-            video, clip, temp_labels, spat_labels, t_flag, clip_org, phase = data['video'], data['clip'], data['label'], data["trans_label"], data["temporal"], data["clip_org"], data["phase"]
-            '''
-            n_temp = t_flag.sum().item()
-
-            stacked_clips = torch.stack(clips) # clip stack하기
-            # custom dataset
-            vad_dataset_clip = VideoAnomalyDataset_C3D_for_Clip(clips = stacked_clips, 
-                                                                frame_num=args.sample_num,
-                                                                static_threshold=args.static_threshold,
-                                                                phase = phase)
-            # dataloader
-            vad_dataloader_clip = dataloader(vad_dataset_clip, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True)
-            # 초기화
-            if len(stacked_clips)==args.clip_num: # clip_num이 되면
-                stacked_clips = []
-            # dataloader
-            for clip_data in vad_dataloader_clip:
-                label = clip_data["label"]
-
-
-
-
-            stacked_clips = stacked_clips.cuda(args.device, non_blocking=True)'''
+        for it, data in enumerate(vad_dataloader):
+            # 데이터 로드
+            video, clip, temp_labels, spat_labels, t_flag, clip_org, phase = \
+                data['video'], data['clip'], data['label'], data["trans_label"], data["temporal"], data["clip_org"], data["phase"]
 
             clip = clip.cuda(args.device, non_blocking=True)
-            # clip 데이터를 GPU로 옮김
-            # non_blocking=True 옵션은 메모리 복사가 완료될 때까지 대기하지 않고 바로 반환되도록 설정하여 병목을 줄이는 데 사용
             temp_labels = temp_labels[t_flag].long().view(-1).cuda(args.device)
             spat_labels = spat_labels[~t_flag].long().view(-1).cuda(args.device)
-            # t_flag에 해당하는 데이터의 임시 라벨과 공간 라벨을 GPU로 옮기고, view(-1)을 사용하여 1차원 텐서로 변환
 
-
-
+            # 프레임 로스 계산
             temp_logits, spat_logits = net(clip)
             temp_logits = temp_logits[t_flag].view(-1, args.sample_num)
             spat_logits = spat_logits[~t_flag].view(-1, 9)
-            # 출력된 로짓 값을 t_flag에 따라 선택하고, 각 라벨에 맞게 크기를 조정
 
             temp_loss = criterion(temp_logits, temp_labels)
             spat_loss = criterion(spat_logits, spat_labels)
 
-            loss = temp_loss + spat_loss
+            frame_loss = temp_loss + spat_loss
+            frame_loss_sum += frame_loss  # 프레임 로스 누적
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # 클립 데이터 저장
+            stacked_clips.append(clip_org)
 
-            writer.add_scalar('Train/Loss', loss.item(), global_step=global_step)
-            writer.add_scalar('Train/Temporal', temp_loss.item(), global_step=global_step)
-            writer.add_scalar('Train/Spatial', spat_loss.item(), global_step=global_step)
+            # 5개의 프레임 로스가 누적되면 클립 로스를 계산
+            if len(stacked_clips) == args.clip_num:
+                vad_dataset_clip = VideoAnomalyDataset_C3D_for_Clip(
+                    clips=torch.stack(stacked_clips),
+                    frame_num=args.sample_num,
+                    static_threshold=args.static_threshold,
+                    phase=phase
+                )
+                vad_dataloader_clip = DataLoader(
+                    vad_dataset_clip, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True
+                )
 
-            if (global_step + 1) % args.print_interval == 0:
-                print("[{}:{}/{}]\tloss: {:.6f} t_loss: {:.6f} s_loss: {:.6f} \ttime: {:.6f}".\
-                        format(epoch, it + 1, len(vad_dataloader), loss.item(), temp_loss.item(), spat_loss.item(),  time.time() - t0))
-                t0 = time.time()
+                # 클립 로스 계산
+                for clip_data in vad_dataloader_clip:
+                    batch_clips, clip_temp_labels, clip_spat_labels = \
+                        clip_data["clips"], clip_data["labels"], clip_data["trans_label"]
 
+                    clip_temp_logits, clip_spat_logits = net(batch_clips)
+                    clip_temp_loss = criterion(clip_temp_logits, clip_temp_labels)
+                    clip_spat_loss = criterion(clip_spat_logits, clip_spat_labels)
+
+                    clip_loss = clip_temp_loss + clip_spat_loss
+
+                    # 최종 손실 계산 및 업데이트
+                    total_loss = frame_loss_sum / args.clip_num + clip_loss  # 평균 프레임 로스와 클립 로스 합산
+                    optimizer.zero_grad()
+                    total_loss.backward()
+                    optimizer.step()
+
+                    # Tensorboard에 로스 기록
+                    writer.add_scalar('Train/frame_loss', (frame_loss_sum / args.clip_num).item(), global_step=global_step)
+                    writer.add_scalar('Train/clip_loss', clip_loss.item(), global_step=global_step)
+                    writer.add_scalar('Train/total_loss', total_loss.item(), global_step=global_step)
+
+                # 스택 및 프레임 로스 초기화
+                stacked_clips = []
+                frame_loss_sum = 0
+
+            global_step += 1
+
+                
+            ####################################
+            
+            
             global_step += 1
 
             if global_step % args.val_step == 0 and epoch >= 5: # 수정
