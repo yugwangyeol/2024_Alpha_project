@@ -2,69 +2,122 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 class WideBranchNet(nn.Module):
-
-    def __init__(self, time_length=7, num_classes=[127, 8]):
+    def __init__(self, frame_num=7, clip_num=5):
         super(WideBranchNet, self).__init__()
         
-        self.time_length = time_length
-        self.num_classes = num_classes
-        self.model = nn.Sequential(
-            nn.Conv3d(1, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1), bias=False),
+        self.frame_num = frame_num
+        self.clip_num = clip_num
+        
+        # Backbone network
+        self.backbone = nn.Sequential(
+            nn.Conv3d(1, 32, kernel_size=(3, 3, 3), padding=(1, 1, 1), bias=False),
             nn.InstanceNorm3d(32),
             nn.ReLU(),
-            nn.Conv3d(32, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1), bias=False),
+            nn.Conv3d(32, 32, kernel_size=(3, 3, 3), padding=(1, 1, 1), bias=False),
             nn.InstanceNorm3d(32),
             nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2), padding=(0, 0, 0)),
-
-            nn.Conv3d(32, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1), bias=False),
+            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
+            
+            nn.Conv3d(32, 64, kernel_size=(5, 3, 3), padding=(2, 1, 1), bias=False),
             nn.InstanceNorm3d(64),
             nn.ReLU(),
-            nn.Conv3d(64, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1), bias=False),
+            nn.Conv3d(64, 64, kernel_size=(5, 3, 3), padding=(2, 1, 1), bias=False),
             nn.InstanceNorm3d(64),
             nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2), padding=(0, 0, 0)),
-
-            nn.Conv3d(64, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1), bias=False),
-            nn.InstanceNorm3d(64),
+            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
+            
+            nn.Conv3d(64, 128, kernel_size=(3, 3, 3), padding=(1, 1, 1), bias=False),
+            nn.InstanceNorm3d(128),
             nn.ReLU(),
-            nn.Conv3d(64, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1), bias=False),
-            nn.InstanceNorm3d(64),
+            nn.Conv3d(128, 128, kernel_size=(3, 3, 3), padding=(1, 1, 1), bias=False),
+            nn.InstanceNorm3d(128),
             nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(self.time_length, 2, 2), stride=(1, 2, 2), padding=(0, 0, 0)),
-        )
-        self.conv2d = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.InstanceNorm2d(64),
-            nn.ReLU(),
-            nn.Dropout2d(p=0.3)
-            )
-        self.max2d = nn.MaxPool2d(2, 2)
-        self.classifier_1 = nn.Sequential(
-            nn.Linear(1024, 512),
-            nn.ReLU(),
-            nn.Linear(512, self.num_classes[0])
-        )
-        self.classifier_2 = nn.Sequential(
-            nn.Linear(1024, 512),
-            nn.ReLU(),
-            nn.Linear(512, self.num_classes[1])
         )
         
+        # 모드별 시간적 특징 처리기
+        self.frame_temporal_processor = nn.Sequential(
+            nn.Conv3d(128, 128, kernel_size=(5, 3, 3), padding=(2, 1, 1)),
+            nn.InstanceNorm3d(128),
+            nn.ReLU(),
+            nn.AdaptiveMaxPool3d((7, 4, 4))  # frame mode용
+        )
+        
+        self.clip_temporal_processor = nn.Sequential(
+            nn.Conv3d(128, 128, kernel_size=(5, 3, 3), padding=(2, 1, 1)),
+            nn.InstanceNorm3d(128),
+            nn.ReLU(),
+            nn.AdaptiveMaxPool3d((35, 4, 4))  # clip mode용
+        )
+        
+        # 공간적 특징 처리기
+        self.spatial_processor = nn.Sequential(
+            nn.Conv3d(128, 128, kernel_size=(1, 3, 3), padding=(0, 1, 1)),
+            nn.InstanceNorm3d(128),
+            nn.ReLU(),
+            nn.AdaptiveMaxPool3d((1, 4, 4))
+        )
+        
+        # Feature sizes
+        frame_temporal_feat_size = 128 * 7 * 4 * 4
+        clip_temporal_feat_size = 128 * 35 * 4 * 4
+        spatial_feat_size = 128 * 1 * 4 * 4
+        
+        # 분류기
+        self.frame_temp_classifier = self._make_classifier(frame_temporal_feat_size, frame_num**2)
+        self.frame_spat_classifier = self._make_classifier(spatial_feat_size, 81)
+        self.clip_temp_classifier = self._make_classifier(clip_temporal_feat_size, clip_num**2)
+        self.clip_spat_classifier = self._make_classifier(spatial_feat_size, 81)
+        
+    def _make_classifier(self, in_features, num_classes):
+        return nn.Sequential(
+            nn.Linear(in_features, 512),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(512, num_classes)
+        )
     
-    def forward(self, x):
-        out = self.model(x)
-        out = out.squeeze(2)
-        out = self.max2d(self.conv2d(out))
-        out = out.view((out.size(0), -1))
-        out1 = self.classifier_1(out)
-        out2 = self.classifier_2(out)
-        return out1, out2
-
+    def forward(self, x, mode='frame'):
+        batch_size = x.size(0)
+        
+        # 공통 특징 추출
+        features = self.backbone(x)
+        
+        # 모드별 시간적 특징 처리
+        if mode == 'frame':
+            temp_features = self.frame_temporal_processor(features)
+        else:  # clip mode
+            temp_features = self.clip_temporal_processor(features)
+            
+        temp_features = temp_features.view(batch_size, -1)
+        
+        # 공간적 특징 처리
+        spat_features = self.spatial_processor(features)
+        spat_features = spat_features.view(batch_size, -1)
+        
+        # 분류
+        if mode == 'frame':
+            temp_out = self.frame_temp_classifier(temp_features)
+            spat_out = self.frame_spat_classifier(spat_features)
+        else:
+            temp_out = self.clip_temp_classifier(temp_features)
+            spat_out = self.clip_spat_classifier(spat_features)
+        
+        return temp_out, spat_out
 
 if __name__ == '__main__':
-    net = WideBranchNet(time_length=9, num_classes=[49, 81])
-    x = torch.rand(2, 3, 7, 64, 64)
-    out = net(x)
+    # Test the model
+    model = WideBranchNet(frame_num=7, clip_num=5)
+    model.cuda()
+    
+    # Test with frame-level input
+    frame_input = torch.randn(2, 1, 7, 64, 64).cuda()
+    frame_temp, frame_spat = model(frame_input, mode='frame')
+    print(f"Frame-level temporal output shape: {frame_temp.shape}")
+    print(f"Frame-level spatial output shape: {frame_spat.shape}")
+    
+    # Test with clip-level input
+    clip_input = torch.randn(2, 1, 35, 64, 64).cuda()
+    clip_temp, clip_spat = model(clip_input, mode='clip')
+    print(f"Clip-level temporal output shape: {clip_temp.shape}")
+    print(f"Clip-level spatial output shape: {clip_spat.shape}")

@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torchvision import transforms
 from torch.utils.data import Dataset
 
-class VideoAnomalyDataset_C3D(Dataset):
+class VideoAnomalyDataset_C3D_Frame(Dataset):
     """Video Anomaly Dataset for DAD_Jigsaw without object detection."""
     def __init__(self,
                  data_dir, 
@@ -82,15 +82,7 @@ class VideoAnomalyDataset_C3D(Dataset):
         # C (채널): 이미지의 채널 수. 이 코드에서는 3채널(컬러 이미지)로 가정
         # T (타임/프레임): 클립에 포함된 프레임 수 (self.frame_num)
         # H (높이) 및 W (너비): 각 프레임의 높이와 너비
-
-        if clip is None: # 수정
-            # 에러 처리 로직 추가
-            print(f"Error getting clip for {record['video_name']} at frame {record['frame']}")
-            # 대체 클립 반환 또는 예외 처리
             
-        # NaN 체크 추가 
-        if np.isnan(clip).any():# 수정
-            print(f"NaN detected in clip: {record['video_name']} at frame {record['frame']}")
 
         if not temporal_flag and self.phase == 'training':
             spatial_perm = np.random.permutation(9) if random.random() >= 0.0001 else np.arange(9)
@@ -126,28 +118,6 @@ class VideoAnomalyDataset_C3D(Dataset):
         # temporal: 클립이 시간 순서 섞기가 적용되었는지 여부
         return ret
 
-    """def get_clip(self, video_name, frame):
-
-        video_dir = os.path.join(self.data_dir, video_name)
-        frame_list = os.listdir(video_dir)
-        frame_list.sort()  # Ensure frame ordering is correct
-
-        img_list = []
-        for i in range(frame - self.half_frame_num, frame + self.half_frame_num + 1):
-            #print(f"img_{i}.png")
-            img_path = os.path.join(video_dir, f"img_{i}.png")
-            img = Image.open(img_path).convert('L')  # Load as 1-channel grayscale
-            img = np.array(img)
-
-            # Convert 1-channel to 3-channel by replicating
-            #img = np.stack([img] * 3, axis=0)  # Shape: (3, H, W)
-            # 1채널(그레이스케일)을 3채널로 복사하여 (3, H, W) 형식의 배열로 만듭니다.
-            img_list.append(img)
-        arr_expanded = np.expand_dims(np.array(img_list), axis=1)
-        clip = arr_expanded.transpose(1, 0, 2, 3)  # (C, T, H, W)
-        # 프레임 리스트를 하나의 클립으로 결합하여 (C, T, H, W) 형식의 4차원 배열로 반환
-        return clip"""
-
     def get_clip(self, video_name, frame): # 수정
         video_dir = os.path.join(self.data_dir, video_name)
         frame_list = os.listdir(video_dir)
@@ -159,7 +129,8 @@ class VideoAnomalyDataset_C3D(Dataset):
             img_path = os.path.join(video_dir, f"img_{i}.png")
             try:
                 img = Image.open(img_path).convert('L')
-                #img = np.array(img) / 255.0  # 정규화 추가
+                img = img.resize((64,64))
+                img = np.array(img) / 255.0  # 정규화 추가
                 img = np.array(img, dtype=np.float32)
                 img_list.append(img)
             except:
@@ -212,4 +183,178 @@ class VideoAnomalyDataset_C3D(Dataset):
         """
         patch_list = self.split_image(clip, border, patch_size)
         clip = self.concat(patch_list, border=border, patch_size=patch_size, permutation=permutation, num=3, dropout=dropout)
+        return clip
+
+class VideoAnomalyDataset_C3D_Clip(Dataset):
+    """Video Anomaly Dataset for DAD_Jigsaw with clip-level processing."""
+    def __init__(self,
+                 data_dir, 
+                 frame_num=7,
+                 clip_num=5,
+                 static_threshold=0.2):
+
+        assert os.path.exists(data_dir), "{} does not exist.".format(data_dir)
+        
+        self.data_dir = data_dir
+        self.static_threshold = static_threshold
+        file_list = os.listdir(data_dir)
+        file_list.sort()
+
+        self.frame_num = frame_num
+        self.clip_num = clip_num
+        assert self.frame_num % 2 == 1, 'We prefer odd number of frames'
+        self.half_frame_num = self.frame_num // 2
+
+        self.total_frames = self.frame_num * self.clip_num
+
+        self.videos_list = []
+        self.phase = 'testing' if 'test' in data_dir else 'training'
+        self.sample_step = 5 if self.phase == 'training' else 1
+
+        self.frames_list = []
+        self._load_data(file_list)
+
+    def _load_data(self, file_list):
+        t0 = time.time()
+        total_frames = 0
+        start_ind = self.half_frame_num if self.phase == 'testing' else self.frame_num - 1
+        
+        for video_file in file_list:
+            if video_file not in self.videos_list:
+                self.videos_list.append(video_file)
+            frames = os.listdir(os.path.join(self.data_dir, video_file))
+            frames.sort()
+            length = len(frames)
+            total_frames += length
+            
+            # 한 번에 clip_num * frame_num 개의 프레임이 필요하므로 그만큼 여유가 있는지 확인
+            last_possible_start = length - (self.total_frames - 1)
+            for frame in range(start_ind, last_possible_start, self.sample_step):
+                self.frames_list.append({"video_name": video_file, "frame": frame})
+
+        print("{} Loaded {} videos with {} frames in {:.2f} seconds.".format(
+            self.phase, len(self.videos_list), total_frames, time.time() - t0))
+
+    def __len__(self):
+        return len(self.frames_list)
+
+    def __video_list__(self):
+        return self.videos_list
+
+    def __getitem__(self, idx):
+        temporal_flag = idx % 2 == 0  # 이전과 동일하게 idx로 결정
+        record = self.frames_list[idx]
+        
+        # clip_num개의 클립을 각각 생성
+        all_clips = []
+        for i in range(self.clip_num):
+            start_frame = record["frame"] + i * self.frame_num
+            clip = self.get_clip(record["video_name"], start_frame)
+            if clip is None:
+                print(f"Error getting clip for {record['video_name']} at frame {start_frame}")
+                continue
+            all_clips.append(clip)
+            
+        # temporal_flag에 따라 처리
+        if temporal_flag:
+            # temporal의 경우: clip_num개의 클립 순서를 변경
+            if self.phase == 'testing':
+                perm = np.arange(self.clip_num)
+            else:
+                perm = np.random.permutation(self.clip_num) if random.random() >= 0.0001 else np.arange(self.clip_num)
+            
+            # 정적 컨텐츠 체크 (첫 클립의 첫/마지막 프레임 비교)
+            first_clip = all_clips[0]
+            if (first_clip[:, -1, :, :] - first_clip[:, 0, :, :]).abs().max() < self.static_threshold:
+                perm = np.arange(self.clip_num)
+                
+            # 클립 순서 변경
+            all_clips = [all_clips[i] for i in perm]
+            
+        else:
+            # spatial의 경우: 각 클립에 대해 동일한 spatial 변환 적용
+            if self.phase == 'training':
+                spatial_perm = np.random.permutation(9) if random.random() >= 0.0001 else np.arange(9)
+            else:
+                spatial_perm = np.arange(9)
+                
+            # 모든 클립에 동일한 spatial 변환 적용
+            all_clips = [self.jigsaw(clip, border=2, patch_size=20, 
+                                   permutation=spatial_perm, dropout=False) for clip in all_clips]
+            perm = np.arange(self.clip_num)  # spatial의 경우 클립 순서는 유지
+            
+        # 모든 클립을 하나로 합치기
+        combined_clip = np.concatenate(all_clips, axis=1)  # axis=1은 프레임 차원
+        combined_clip = torch.from_numpy(combined_clip)
+        combined_clip = torch.clamp(combined_clip, 0., 1.)
+
+        ret = {
+            "video": record["video_name"],
+            "frame": record["frame"],
+            "clip": combined_clip,
+            "label": perm,
+            "trans_label": spatial_perm if not temporal_flag else np.arange(9),
+            "temporal": temporal_flag
+        }
+        
+        return ret
+    
+    def get_clip(self, video_name, frame):
+        video_dir = os.path.join(self.data_dir, video_name)
+        frame_list = os.listdir(video_dir)
+        frame_list.sort(key=lambda x: int(x.split('_')[1].split('.')[0]))
+        
+        img_list = []
+        for i in range(frame - self.half_frame_num, frame + self.half_frame_num + 1):
+            img_path = os.path.join(video_dir, f"img_{i}.png")
+            try:
+                img = Image.open(img_path).convert('L')
+                img = img.resize((64,64))
+                img = np.array(img) / 255.0
+                img = np.array(img, dtype=np.float32)
+                img_list.append(img)
+            except:
+                print(f"Error loading frame: {img_path}")
+                return None
+                
+        if len(img_list) != self.frame_num:
+            print(f"Incomplete clip for {video_name} at frame {frame}")
+            return None
+            
+        arr_expanded = np.expand_dims(np.array(img_list), axis=1)
+        clip = arr_expanded.transpose(1, 0, 2, 3)
+        return clip
+
+    def split_image(self, clip, border=2, patch_size=20):
+        """Splits the clip into patches."""
+        patch_list = []
+        for i in range(3):
+            for j in range(3):
+                y_offset = border + patch_size * i
+                x_offset = border + patch_size * j
+                patch_list.append(clip[:, :, y_offset: y_offset + patch_size, 
+                                x_offset: x_offset + patch_size])
+        return patch_list
+
+    def concat(self, patch_list, border=2, patch_size=20, permutation=np.arange(9), 
+              num=3, dropout=False):
+        """Concatenate the patches back into a full image."""
+        clip = np.zeros((1, self.frame_num, 64, 64), dtype=np.float32)
+        drop_ind = random.randint(0, len(permutation) - 1)
+        for p_ind, i in enumerate(permutation):
+            if drop_ind == p_ind and dropout:
+                continue
+            y = i // num
+            x = i % num
+            y_offset = border + patch_size * y
+            x_offset = border + patch_size * x
+            clip[:, :, y_offset: y_offset + patch_size, 
+                 x_offset: x_offset + patch_size] = patch_list[p_ind]
+        return clip
+
+    def jigsaw(self, clip, border=2, patch_size=20, permutation=None, dropout=False):
+        """Applies jigsaw permutation to the clip."""
+        patch_list = self.split_image(clip, border, patch_size)
+        clip = self.concat(patch_list, border=border, patch_size=patch_size, 
+                          permutation=permutation, num=3, dropout=dropout)
         return clip
