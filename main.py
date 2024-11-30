@@ -4,6 +4,7 @@ import torch
 import time
 import pickle
 import numpy as np
+import wandb
 
 from torch import nn
 import torch.optim as optim
@@ -11,26 +12,26 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from dataset import VideoAnomalyDataset_C3D
-from models import model
+from dataset import VideoAnomalyDataset_C3D_Frame, VideoAnomalyDataset_C3D_Clip
+from models.model import WideBranchNet
 
 from tqdm import tqdm
 from aggregate import remake_video_output, evaluate_auc
 
 torch.backends.cudnn.benchmark = False
 
-# Config
 def get_configs():
     parser = argparse.ArgumentParser(description="VAD-Jigsaw config")
-    parser.add_argument("--val_step", type=int, default=500) # 검증 주기
-    parser.add_argument("--print_interval", type=int, default=100) # 학습 중 로그를 출력할 간격
-    parser.add_argument("--epochs", type=int, default=100) # 전체 학습 반복 수
-    parser.add_argument("--gpu_id", type=str, default=0) # GPU ID를 지정하여 사용할 GPU를 설정
-    parser.add_argument("--log_date", type=str, default=None) # 로그를 저장할 날짜 및 시간
-    parser.add_argument("--batch_size", type=int, default=64) # 학습 시 배치 크기
-    parser.add_argument("--static_threshold", type=float, default=0.3) # 정적 프레임을 판단하는 임계값
-    parser.add_argument("--sample_num", type=int, default=5) # 한 비디오에서 사용할 프레임의 개수
-    parser.add_argument("--checkpoint", type=str, default=None) # 
+    parser.add_argument("--val_step", type=int, default=500)
+    parser.add_argument("--print_interval", type=int, default=100)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--gpu_id", type=str, default=0)
+    parser.add_argument("--log_date", type=str, default=None)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--static_threshold", type=float, default=0.3)
+    parser.add_argument("--frame_num", type=int, default=7)
+    parser.add_argument("--clip_num", type=int, default=5)
+    parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--dataset", type=str, default="DAD_Jigsaw")
     parser.add_argument("--data_type", type=str, default='top_depth', 
                         choices=['front_depth', 'front_IR', 'top_depth', 'top_IR'])
@@ -40,36 +41,60 @@ def get_configs():
     args.device = torch.device("cuda:{}".format(args.gpu_id) if torch.cuda.is_available() else "cpu")
     return args
 
-
 def train(args):
     if not args.log_date:
         running_date = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
     else:
         running_date = args.log_date
-    print("The running_data : {}".format(running_date))
-    for k,v in vars(args).items():
-        print("-------------{} : {}".format(k, v))
+    print("The running_date : {}".format(running_date))
+
+    wandb.init(
+        project="VAD-Jigsaw",
+        config={
+            "learning_rate": 1e-4,
+            "batch_size": args.batch_size,
+            "frame_num": args.frame_num,
+            "clip_num": args.clip_num,
+            "static_threshold": args.static_threshold,
+            "data_type": args.data_type
+        })
 
     # Load Data
-    data_dir = f"/home/work/Alpha/Jigsaw-VAD/{args.dataset}/training/{args.data_type}/frames"
+    data_dir = os.path.join("../", args.dataset, 'training', args.data_type, 'frames')
 
-    vad_dataset = VideoAnomalyDataset_C3D(data_dir, 
-                                          frame_num=args.sample_num,
-                                          static_threshold=args.static_threshold)
+    frame_dataset = VideoAnomalyDataset_C3D_Frame(data_dir, 
+                                                 frame_num=args.frame_num,
+                                                 static_threshold=args.static_threshold)
 
-    vad_dataloader = DataLoader(vad_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    net = model.WideBranchNet(time_length=args.sample_num, num_classes=[args.sample_num ** 2, 81])
-    # ime_length는 입력 프레임 수를, num_classes는 분류할 클래스 수를 나타냄
-    # args.sample_num ** 2는 sample_num 값에 따라 달라짐
+    clip_dataset = VideoAnomalyDataset_C3D_Clip(data_dir, 
+                                               frame_num=args.frame_num,
+                                               clip_num=args.clip_num,
+                                               static_threshold=args.static_threshold)
 
+    frame_dataloader = DataLoader(frame_dataset, 
+                                batch_size=args.batch_size, 
+                                shuffle=True, 
+                                num_workers=4, 
+                                pin_memory=True)
+
+    clip_dataloader = DataLoader(clip_dataset, 
+                               batch_size=args.batch_size, 
+                               shuffle=True, 
+                               num_workers=4, 
+                               pin_memory=True)
+
+    print(f"Frame dataloader length: {len(frame_dataloader)}")
+    print(f"Clip dataloader length: {len(clip_dataloader)}")
+
+    # Model
+    net = WideBranchNet(frame_num=args.frame_num, clip_num=args.clip_num)
+    
     if args.checkpoint is not None:
         state = torch.load(args.checkpoint)
-        print('load ' + args.checkpoint)
         net.load_state_dict(state, strict=True)
         net.cuda()
         smoothed_auc, smoothed_auc_avg, _ = val(args, net)
         exit(0)
-    # 만약 checkpoint가 설정되어 있다면, 해당 체크포인트 파일에서 모델 가중치를 로드하고, val 함수에서 검증을 수행한 후 종료
 
     net.cuda(args.device)
     net = net.train()
@@ -79,74 +104,127 @@ def train(args):
 
     # Train
     log_dir = './log/{}/'.format(running_date)
-    writer = SummaryWriter(log_dir)
-    # SummaryWriter를 사용하여 텐서보드 로그를 저장할 writer 객체를 생성함 -> 로그 디렉토리는 log_dir로 설정
-
+    #writer = SummaryWriter(log_dir)
+    
     t0 = time.time()
     global_step = 0
-
     max_acc = -1
     timestamp_in_max = None
 
     for epoch in range(args.epochs):
-        for it, data in enumerate(vad_dataloader): # 전체 epochs 동안 vad_dataloader에서 데이터를 반복해서 가져옴
-            video, clip, temp_labels, spat_labels, t_flag = data['video'], data['clip'], data['label'], data["trans_label"], data["temporal"]
+        frame_iter = iter(frame_dataloader)
+        clip_iter = iter(clip_dataloader)
 
-            n_temp = t_flag.sum().item()
+        while True:
+            try:
+                clip_data = next(clip_iter)
+            except StopIteration:
+                clip_iter = iter(clip_dataloader)
+                clip_data = next(clip_iter)
+                
+            # Frame predictions (clip_num times)
+            try:
+                frame_data = next(frame_iter)
+            except StopIteration:
+                frame_iter = iter(frame_dataloader)
+                frame_data = next(frame_iter)
 
-            clip = clip.cuda(args.device, non_blocking=True)
-            # clip 데이터를 GPU로 옮김
-            # non_blocking=True 옵션은 메모리 복사가 완료될 때까지 대기하지 않고 바로 반환되도록 설정하여 병목을 줄이는 데 사용
-            temp_labels = temp_labels[t_flag].long().view(-1).cuda(args.device)
-            spat_labels = spat_labels[~t_flag].long().view(-1).cuda(args.device)
-            # t_flag에 해당하는 데이터의 임시 라벨과 공간 라벨을 GPU로 옮기고, view(-1)을 사용하여 1차원 텐서로 변환
+            # Process frame data
+            f_video, f_clip, f_temp_labels, f_spat_labels, f_flag = (
+                frame_data['video'], frame_data['clip'],
+                frame_data['label'], frame_data["trans_label"],
+                frame_data["temporal"]
+            )
 
-            temp_logits, spat_logits = net(clip)
-            temp_logits = temp_logits[t_flag].view(-1, args.sample_num)
-            spat_logits = spat_logits[~t_flag].view(-1, 9)
-            # 출력된 로짓 값을 t_flag에 따라 선택하고, 각 라벨에 맞게 크기를 조정
+            f_clip = f_clip.cuda(args.device, non_blocking=True)
+            f_temp_labels = f_temp_labels[f_flag].long().view(-1).cuda(args.device)
+            f_spat_labels = f_spat_labels[~f_flag].long().view(-1).cuda(args.device)
 
-            temp_loss = criterion(temp_logits, temp_labels)
-            spat_loss = criterion(spat_logits, spat_labels)
+            f_temp_logits, f_spat_logits = net(f_clip, mode='frame')
+            f_temp_logits = f_temp_logits[f_flag].view(-1, args.frame_num)
+            f_spat_logits = f_spat_logits[~f_flag].view(-1, 9)
 
-            loss = temp_loss + spat_loss
+            f_temp_loss = criterion(f_temp_logits, f_temp_labels)
+            f_spat_loss = criterion(f_spat_logits, f_spat_labels)
 
+            # Process clip data
+            c_video, c_clip, c_temp_labels, c_spat_labels, c_flag = (
+                clip_data['video'], clip_data['clip'],
+                clip_data['label'], clip_data["trans_label"],
+                clip_data["temporal"]
+            )
+
+            c_clip = c_clip.cuda(args.device, non_blocking=True)
+            c_temp_labels = c_temp_labels[c_flag].long().view(-1).cuda(args.device)
+            c_spat_labels = c_spat_labels[~c_flag].long().view(-1).cuda(args.device)
+
+            c_temp_logits, c_spat_logits = net(c_clip, mode='clip')
+            c_temp_logits = c_temp_logits[c_flag].view(-1, args.clip_num)
+            c_spat_logits = c_spat_logits[~c_flag].view(-1, 9)
+            c_temp_loss = criterion(c_temp_logits, c_temp_labels)
+            c_spat_loss = criterion(c_spat_logits, c_spat_labels)
+
+            # Total loss
+            total_loss = f_temp_loss + f_spat_loss + c_temp_loss + c_spat_loss
+
+            # Optimization
             optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
             optimizer.step()
 
-            writer.add_scalar('Train/Loss', loss.item(), global_step=global_step)
-            writer.add_scalar('Train/Temporal', temp_loss.item(), global_step=global_step)
-            writer.add_scalar('Train/Spatial', spat_loss.item(), global_step=global_step)
+            # Logging
+            #writer.add_scalar('Train/Loss', total_loss.item(), global_step=global_step)
 
-            if (global_step + 1) % args.print_interval == 0:
-                print("[{}:{}/{}]\tloss: {:.6f} t_loss: {:.6f} s_loss: {:.6f} \ttime: {:.6f}".\
-                        format(epoch, it + 1, len(vad_dataloader), loss.item(), temp_loss.item(), spat_loss.item(),  time.time() - t0))
+            
+            if global_step % args.print_interval == 0:
+
+                metrics = {
+                    "train/total_loss": total_loss.item(),
+                    "train/frame_temporal_loss": f_temp_loss.item(),
+                    "train/frame_spatial_loss": f_spat_loss.item(),
+                    "train/clip_temporal_loss": c_temp_loss.item(),
+                    "train/clip_spatial_loss": c_spat_loss.item(),
+                    "train/epoch": epoch,
+                    "train/global_step": global_step
+                }
+                wandb.log(metrics)
+                print("[Epoch {}] Step: {}, Total Loss: {:.6f}, Frame_Temp: {:.6f}, Frame_Spat: {:.6f}, Clip_Temp: {:.6f}, Clip_Spat: {:.6f}, Time: {:.6f}".format(
+                    epoch, global_step, total_loss.item(), f_temp_loss.item(),  f_spat_loss.item(),
+                    c_temp_loss.item(), c_spat_loss.item(), time.time() - t0
+                ))
                 t0 = time.time()
 
             global_step += 1
 
-            if global_step % args.val_step == 0 and epoch >= 5: # 수정
+            # Validation
+            if global_step % args.val_step == 0 and epoch >= 5:
                 smoothed_auc, smoothed_auc_avg, temp_timestamp = val(args, net)
-                writer.add_scalar('Test/smoothed_auc', smoothed_auc, global_step=global_step)
-                writer.add_scalar('Test/smoothed_auc_avg', smoothed_auc_avg, global_step=global_step)
+                #writer.add_scalar('Test/smoothed_auc', smoothed_auc, global_step=global_step)
+                #writer.add_scalar('Test/smoothed_auc_avg', smoothed_auc_avg, global_step=global_step)
 
-                if smoothed_auc > max_acc:
-                    max_acc = smoothed_auc
+                wandb.log({
+                    "val/smoothed_auc": smoothed_auc.auc,
+                    "val/smoothed_auc_avg": smoothed_auc_avg,
+                })
+
+                if smoothed_auc.auc > max_acc:
+                    max_acc = smoothed_auc.auc
                     timestamp_in_max = temp_timestamp
                     save = './checkpoint/{}_{}.pth'.format('best', running_date)
                     torch.save(net.state_dict(), save)
 
                 print('cur max: ' + str(max_acc) + ' in ' + timestamp_in_max)
                 net = net.train()
-        
-        if epoch % args.save_epoch == 0 and epoch >= 5:
-            save = './save_ckpt/{}_{}.pth'.format(running_date,epoch)
-            torch.save(net.state_dict(), save)
             
-def compare_clips(clip1, clip2):
-    diff = (clip1 - clip2).abs().sum().item()
-    print(f"Difference between clips: {diff}")
+            # Check if we should end the epoch (based on frame_dataloader length)
+            if global_step % len(frame_dataloader) == 0:
+                break
+
+        if epoch % args.save_epoch == 0 and epoch >= 5:
+            save = './save_ckpt/{}_{}.pth'.format(running_date, epoch)
+            torch.save(net.state_dict(), save)
+    
+    wandb.finish()
 
 def val(args, net=None):
     if not args.log_date:
@@ -156,67 +234,130 @@ def val(args, net=None):
     print("The running_date : {}".format(running_date))
 
     # Load Data
-    data_dir = f"/home/work/Alpha/Jigsaw-VAD/{args.dataset}/testing/{args.data_type}/frames" #
+    data_dir = os.path.join("../", args.dataset, 'testing', args.data_type, 'frames')
 
-    testing_dataset = VideoAnomalyDataset_C3D(data_dir, 
-                                              frame_num=args.sample_num)
-    testing_data_loader = DataLoader(testing_dataset, batch_size=256, shuffle=False, num_workers=4, drop_last=False)
+    # Frame-level testing dataset
+    frame_dataset = VideoAnomalyDataset_C3D_Frame(data_dir, 
+                                                 frame_num=args.frame_num)
+    frame_dataloader = DataLoader(frame_dataset, 
+                                batch_size=256, 
+                                shuffle=False, 
+                                num_workers=4, 
+                                drop_last=False)
+
+    # Clip-level testing dataset
+    clip_dataset = VideoAnomalyDataset_C3D_Clip(data_dir, 
+                                               frame_num=args.frame_num,
+                                               clip_num=args.clip_num)
+    clip_dataloader = DataLoader(clip_dataset, 
+                               batch_size=256, 
+                               shuffle=False, 
+                               num_workers=4, 
+                               drop_last=False)
 
     net.eval()
 
-    video_output = {}
-    for idx, data in enumerate(tqdm(testing_data_loader)):
+    # Store outputs
+    frame_video_output = {}
+    clip_video_output = {}
+
+    # Frame-level prediction
+    print("Processing frame-level predictions...")
+    for idx, data in enumerate(tqdm(frame_dataloader)):
         videos = data["video"]
         frames = data["frame"].tolist()
         clip = data["clip"].cuda(args.device)
 
         with torch.no_grad():
-            temp_logits, spat_logits = net(clip)
-            #print("Temp logits1:", temp_logits)
-            if torch.isnan(temp_logits).any(): # 수정
-                print(f"NaN detected in output at batch {idx}")
+            temp_logits, spat_logits = net(clip, mode='frame')
+            if torch.isnan(temp_logits).any():
+                print(f"NaN detected in frame output at batch {idx}")
                 print(f"Input statistics: min={data['clip'].min()}, max={data['clip'].max()}")
 
-            temp_logits = temp_logits.view(-1, args.sample_num, args.sample_num)
-            #print("Temp logits2:", temp_logits)
-
+            temp_logits = temp_logits.view(-1, args.frame_num, args.frame_num)
             spat_logits = spat_logits.view(-1, 9, 9)
 
         spat_probs = F.softmax(spat_logits, -1)
         diag = torch.diagonal(spat_probs, offset=0, dim1=-2, dim2=-1)
         scores = diag.min(-1)[0].cpu().numpy()
-        # spat_logits 값을 소프트맥스 함수(softmax)를 사용하여 확률로 변환하고, 주 대각선 요소를 선택하여 각 로짓의 최소값을 scores에 저장
 
         temp_probs = F.softmax(temp_logits, -1)
         diag2 = torch.diagonal(temp_probs, offset=0, dim1=-2, dim2=-1)
-        #print(diag2.shape)
         scores2 = diag2.min(-1)[0].cpu().numpy()
-        # temp_logits 값을 소프트맥스 함수(softmax)를 사용하여 확률로 변환하고, 주 대각선 요소를 선택하여 각 로짓의 최소값을 scores에 저장
         
         for video_, frame_, s_score_, t_score_  in zip(videos, frames, scores, scores2):
-            #print(s_score_ ,' ' ,t_score_)
-            if video_ not in video_output:
-                video_output[video_] = {}
-            if frame_ not in video_output[video_]:
-                video_output[video_][frame_] = []
-            video_output[video_][frame_].append([s_score_, t_score_])
-            #print(s_score_,t_score_)
-        # video_output 딕셔너리에 video_, frame_을 키로 하고, s_score_, t_score_ 값을 저장하여 각 비디오와 프레임의 성능을 기록
+            if video_ not in frame_video_output:
+                frame_video_output[video_] = {}
+            if frame_ not in frame_video_output[video_]:
+                frame_video_output[video_][frame_] = []
+            frame_video_output[video_][frame_].append([s_score_, t_score_])
 
-    micro_auc, macro_auc = save_and_evaluate(video_output, running_date, dataset=args.dataset)
-    return micro_auc, macro_auc, running_date
+    # Clip-level prediction
+    print("Processing clip-level predictions...")
+    for idx, data in enumerate(tqdm(clip_dataloader)):
+        videos = data["video"]
+        frames = data["frame"].tolist()
+        clip = data["clip"].cuda(args.device)
 
+        with torch.no_grad():
+            temp_logits, spat_logits = net(clip, mode='clip')
+            if torch.isnan(temp_logits).any():
+                print(f"NaN detected in clip output at batch {idx}")
+                print(f"Input statistics: min={data['clip'].min()}, max={data['clip'].max()}")
 
-def save_and_evaluate(video_output, running_date, dataset='DAD_Jigsaw'):
+            temp_logits = temp_logits.view(-1, args.clip_num, args.clip_num)
+            spat_logits = spat_logits.view(-1, 9, 9)
+
+        spat_probs = F.softmax(spat_logits, -1)
+        diag = torch.diagonal(spat_probs, offset=0, dim1=-2, dim2=-1)
+        scores = diag.min(-1)[0].cpu().numpy()
+
+        temp_probs = F.softmax(temp_logits, -1)
+        diag2 = torch.diagonal(temp_probs, offset=0, dim1=-2, dim2=-1)
+        scores2 = diag2.min(-1)[0].cpu().numpy()
+        
+        for video_, frame_, s_score_, t_score_  in zip(videos, frames, scores, scores2):
+            if video_ not in clip_video_output:
+                clip_video_output[video_] = {}
+            if frame_ not in clip_video_output[video_]:
+                clip_video_output[video_][frame_] = []
+            clip_video_output[video_][frame_].append([s_score_, t_score_])
+
+    # Combine frame and clip predictions
+    combined_video_output = {}
+    for video_ in set(frame_video_output.keys()) | set(clip_video_output.keys()):
+        combined_video_output[video_] = {}
+        all_frames = set(frame_video_output.get(video_, {}).keys()) | set(clip_video_output.get(video_, {}).keys())
+        
+        for frame_ in all_frames:
+            frame_scores = frame_video_output.get(video_, {}).get(frame_, [[1.0, 1.0]])
+            clip_scores = clip_video_output.get(video_, {}).get(frame_, [[1.0, 1.0]])
+            
+            # Combine scores (average of frame and clip predictions)
+            combined_s_score = (frame_scores[0][0] + clip_scores[0][0]) / 2
+            combined_t_score = (frame_scores[0][1] + clip_scores[0][1]) / 2
+            
+            combined_video_output[video_][frame_] = [[combined_s_score, combined_t_score]]
+
+    # Save predictions
     pickle_path = './log/video_output_ori_{}.pkl'.format(running_date)
     with open(pickle_path, 'wb') as write:
-        pickle.dump(video_output, write, pickle.HIGHEST_PROTOCOL)
-    video_output_spatial, video_output_temporal, video_output_complete = remake_video_output(video_output, dataset=dataset)
-    evaluate_auc(video_output_spatial, dataset=dataset)
-    evaluate_auc(video_output_temporal, dataset=dataset)
-    smoothed_res, smoothed_auc_list = evaluate_auc(video_output_complete, dataset=dataset)
-    return smoothed_res.auc, np.mean(smoothed_auc_list)
-#
+        pickle.dump(combined_video_output, write, pickle.HIGHEST_PROTOCOL)
+
+    # Evaluate predictions
+    frame_spatial, frame_temporal, frame_complete = remake_video_output(frame_video_output)
+    frame_auc, frame_auc_list = evaluate_auc(frame_complete)
+    print(f"Frame-level AUC: {frame_auc}")
+
+    clip_spatial, clip_temporal, clip_complete = remake_video_output(clip_video_output)
+    clip_auc, clip_auc_list = evaluate_auc(clip_complete)
+    print(f"Clip-level AUC: {clip_auc}")
+
+    combined_spatial, combined_temporal, combined_complete = remake_video_output(combined_video_output)
+    combined_auc, combined_auc_list = evaluate_auc(combined_complete)
+    print(f"Combined AUC: {combined_auc}")
+
+    return combined_auc, np.mean(combined_auc_list), running_date
 
 if __name__ == '__main__':
     if not os.path.exists('checkpoint'):

@@ -56,7 +56,7 @@ def visualize_data_distribution(epoch, psnr_records):
 ###
 
 # Path to the dataset directory
-DATA_DIR = '/home/work/Alpha/Jigsaw-VAD/'
+DATA_DIR = '../'
 
 # Normalize scores in each sub video
 NORMALIZE = True

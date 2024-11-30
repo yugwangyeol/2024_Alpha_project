@@ -16,7 +16,7 @@ def extract_frames(video_path, output_dir):
         frame_count += 1
 
     video_capture.release()
-    print(f"Extracted {frame_count} framㅁes from {video_path} to {output_dir}")
+    print(f"Extracted {frame_count} frames from {video_path} to {output_dir}")
 
 def process_videos(video_dir, frames_dir):
     if not os.path.exists(video_dir):
